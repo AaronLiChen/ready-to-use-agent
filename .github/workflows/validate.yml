@@ -1,0 +1,40 @@
+name: Validate portable agent setup
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install locked public dependencies
+        run: npm ci --ignore-scripts
+      - name: Validate export privacy
+        run: python3 scripts/check_export.py
+      - name: Validate TypeScript
+        run: npm run typecheck
+      - name: Test native compaction
+        run: npm test
+      - name: Test portable installation
+        run: python3 -m unittest discover -s tests -v
+      - name: Audit dependencies
+        run: npm audit --registry=https://registry.npmjs.org --audit-level=moderate
