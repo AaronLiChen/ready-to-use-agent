@@ -1,0 +1,35 @@
+{
+  "name": "ready-to-use-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Portable agent instructions, workflow ownership, and Pi native compaction",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "test": "node --test extensions/openai-native-compaction/test-core.mjs extensions/openai-native-compaction/test-recovery.mjs extensions/openai-native-compaction/test-sdk.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:python": "python3 -m unittest discover -s tests -v",
+    "check:export": "python3 scripts/check_export.py"
+  },
+  "pi": {
+    "extensions": ["extensions/openai-native-compaction/index.ts"],
+    "skills": ["skills/ready-agent-setup"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-ai": "*"
+  },
+  "overrides": {
+    "minimatch": "11.0.1",
+    "undici": "8.12.2"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.4",
+    "@earendil-works/pi-ai": "0.84.4",
+    "@types/node": "^22.19.0",
+    "typescript": "5.9.3"
+  }
+}
