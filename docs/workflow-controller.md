@@ -69,6 +69,9 @@ Put the rule inside `repository_watches`.
 Repository-wide intake does not require an individual review request.
 The collector holds drafts, excludes all configured author identities, and deduplicates existing ownership.
 Each repository scan has separate coverage. A failed scan does not withdraw pending work or stop another repository.
+Repository-wide idle probes default to 15 minutes to reduce API pressure.
+Direct requests and pending actions retain the normal probe and retry intervals.
+Set `github_repository_probe_interval` in `scheduler-config.json` to adjust the repository-only cadence within 300–3,600 seconds.
 To revoke repository-wide authority, remove or disable that exact rule.
 Pausing intake alone does not revoke already-enrolled ownership.
 

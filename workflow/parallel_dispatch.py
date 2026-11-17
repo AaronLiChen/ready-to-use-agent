@@ -81,7 +81,8 @@ def candidates(now=None):
         age=now-epoch(j.get('last_poll_at'))
         due=bool((j.get('wake_at') and j['wake_at']<=now) or (j.get('probe_retry_at') and j['probe_retry_at']<=now))
         model_ready=j['status'] in ('ready','active') and not (j.get('budget_wait_until',0)>now)
-        if not model_ready and not due and age<settings['probe_interval']:continue
+        interval=settings['github_repository_probe_interval'] if j.get('github_repository_watch') else settings['probe_interval']
+        if not model_ready and not due and age<interval:continue
         items.append({'kind':'job','id':j['id'],'url':j['url'],'pr_key':pr_key(j['url']),'order':(0,epoch(j.get('last_poll_at')),j['id'])})
     if len(w.recent_cycles())<w.global_cycle_limit():
         for r in intake_rows():

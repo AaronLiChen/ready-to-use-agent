@@ -177,12 +177,12 @@ def recent_cycles():
 
 def scheduler_settings():
     defaults = {"max_parallel_workers": 4, "global_cycles_per_day": 48,
-                "probe_interval": 300, "dispatch_interval": 5}
+                "probe_interval": 300, "dispatch_interval": 5, "github_repository_probe_interval": 900}
     path = ROOT / "scheduler-config.json"
     configured = load(path) if path.exists() else {}
     result = {key: configured.get(key, value) for key, value in defaults.items()}
     bounds = {"max_parallel_workers": (1, 128), "global_cycles_per_day": (1, 100000),
-              "probe_interval": (30, 3600), "dispatch_interval": (1, 60)}
+              "probe_interval": (30, 3600), "dispatch_interval": (1, 60), "github_repository_probe_interval": (300, 3600)}
     for key, value in result.items():
         low, high = bounds[key]
         if type(value) is not int or not low <= value <= high:

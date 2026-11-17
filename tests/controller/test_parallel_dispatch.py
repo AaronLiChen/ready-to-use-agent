@@ -122,6 +122,19 @@ class ParallelDispatchTests(unittest.TestCase):
         self.job('waiting',42,status='waiting',last_poll_at=w.utc())
         self.assertEqual(p.candidates(),[])
 
+    def test_repository_idle_probes_preserve_capacity_without_delaying_direct_requests(self):
+        now=time.time();last=time.strftime('%Y-%m-%dT%H:%M:%S+00:00',time.gmtime(now-400))
+        self.job('wide',1,status='waiting',url='https://github.com/example/repo/pull/1',
+                 github_repository_watch='example/repo',last_poll_at=last)
+        self.job('direct',2,status='waiting',url='https://github.com/example/repo/pull/2',last_poll_at=last)
+        self.assertEqual([row['id'] for row in p.candidates(now)],['direct'])
+        self.assertIn('wide',[row['id'] for row in p.candidates(now+600)])
+
+    def test_repository_pending_action_retries_do_not_wait_for_idle_probe_cadence(self):
+        self.job('wide',1,status='waiting',url='https://github.com/example/repo/pull/1',
+                 github_repository_watch='example/repo',last_poll_at=w.utc(),wake_at=time.time()-1,pending_action='comment')
+        self.assertEqual([row['id'] for row in p.candidates()],['wide'])
+
     def test_paused_blocked_and_done_jobs_are_not_dispatched(self):
         for i,state in enumerate(['paused','blocked','done']):self.job('job-'+str(i),i+1,status=state)
         self.assertEqual(p.candidates(),[])
