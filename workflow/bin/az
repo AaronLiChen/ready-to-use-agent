@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+"""Managed-worker Azure CLI adapter. Normalize token output and record auth holds."""
+import os
+from pathlib import Path
+import sys
+
+code=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(code))
+import auth_recovery as auth
+
+args=sys.argv[1:]
+managed=any(os.environ.get(key) for key in ('AUTOWORKFLOW_JOB','AUTOWORKFLOW_INTAKE','AUTOWORKFLOW_AUTH_ID'))
+if managed and (args[:1] in (['login'],['logout']) or args[:2]==['account','clear']):
+    auth.failure('sign_in')
+    print('AUTOWORKFLOW_AUTH_WAIT: interactive login or credential reset needs the human; use agent-workflow auth-status.',file=sys.stderr)
+    raise SystemExit(75)
+is_token=(args[:2]==['account','get-access-token'] and '--query' in args and
+          args[args.index('--query')+1:args.index('--query')+2]==['accessToken'] and
+          (('-o' in args and args[args.index('-o')+1:args.index('-o')+2]==['tsv']) or
+           ('--output' in args and args[args.index('--output')+1:args.index('--output')+2]==['tsv'])))
+if managed:
+    try:
+        import write_guard
+        write_guard.azure_command(args)
+    except (ValueError, RuntimeError) as error:
+        print('Managed Azure CLI action held: ' + str(error), file=sys.stderr)
+        raise SystemExit(75)
+# ADO tokens only. Other Azure resources retain native behavior.
+resource=args[args.index('--resource')+1] if '--resource' in args and args.index('--resource')+1<len(args) else None
+if not is_token or resource!=auth.RESOURCE:
+    real=auth.real_azure_cli();os.execv(real,[real,*args])
+try:
+    token=auth.acquire(auth.load_skill())
+except auth.AuthError as error:
+    print('AUTOWORKFLOW_AUTH_WAIT: '+error.reason+'. Use agent-workflow auth-status. Do not retry login interactively from a background worker.',file=sys.stderr)
+    raise SystemExit(75)
+print(token)

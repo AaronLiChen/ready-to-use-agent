@@ -38,6 +38,13 @@ def private_write(path, data, mode=0o600):
         temporary.unlink(missing_ok=True)
 
 
+def matches_record(path, record):
+    if not path.is_file() or digest(path.read_bytes()) != record.get('sha256'):
+        return False
+    mode = record.get('installed_mode')
+    return mode is None or path.stat().st_mode & 0o777 == mode
+
+
 def managed_block(current, body):
     block = START + '\n' + body.rstrip() + '\n' + END
     if current.count(START) != current.count(END) or current.count(START) > 1:
@@ -50,7 +57,8 @@ def managed_block(current, body):
 
 
 class Installation:
-    def __init__(self, home, agents=('pi',), source=SOURCE, provider=None, model=None, threshold=200000):
+    def __init__(self, home, agents=('pi',), source=SOURCE, provider=None, model=None, threshold=200000,
+                 workflow=False, workflow_platform=None, workflow_pi=None, claude_hooks=False):
         self.home = Path(home).expanduser().absolute()
         self.source = Path(source)
         self.agents = list(dict.fromkeys(agents))
@@ -61,6 +69,9 @@ class Installation:
         if not isinstance(threshold, int) or not 1024 <= threshold <= 1000000:
             raise ValueError('The native threshold must be between 1024 and 1000000 tokens')
         self.provider, self.model, self.threshold = provider, model, threshold
+        self.workflow, self.workflow_platform, self.workflow_pi, self.claude_hooks = workflow, workflow_platform, workflow_pi, claude_hooks
+        if claude_hooks and not workflow:
+            raise ValueError('Optional Claude hooks require --workflow')
         self.prefix = self.home / '.agents/ready-to-use-agent'
         self.manifest_path = self.target('.agents/ready-to-use-agent/install-manifest.json')
         self.previous = json.loads(self.manifest_path.read_text()) if self.manifest_path.exists() else {'files': {}}
@@ -91,7 +102,8 @@ class Installation:
         if before is not None and before != data and not merge:
             if not previous or digest(before) != previous.get('sha256'):
                 raise ValueError('Refusing to replace an unmanaged or edited file: ' + str(target))
-        self.actions.append({'relative': relative, 'target': target, 'before': before, 'data': data, 'mode': mode})
+        self.actions.append({'relative': relative, 'target': target, 'before': before, 'data': data, 'mode': mode,
+                             'before_mode': target.stat().st_mode & 0o777 if target.exists() else None})
 
     def plan(self):
         self.actions = []
@@ -124,7 +136,16 @@ class Installation:
             self.add(relative, updated.encode(), merge=True)
         if 'pi' in self.agents:
             self.pi_plan()
+        if self.workflow:
+            self.workflow_support().plan(self, self.workflow_platform, self.workflow_pi, self.claude_hooks)
         return [{'path': str(a['target']), 'state': 'unchanged' if a['before'] == a['data'] else 'planned'} for a in self.actions]
+
+    def workflow_support(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('ready_agent_workflow_install', self.source / 'workflow/install_support.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
 
     def pi_plan(self):
         relative = '.pi/agent/settings.json'
@@ -164,15 +185,20 @@ class Installation:
         changed = []
         try:
             for action in self.actions:
-                path, before, data = action['target'], action['before'], action['data']
+                path, before, data = self.target(action['relative']), action['before'], action['data']
                 current = path.read_bytes() if path.exists() else None
-                if current != before:
+                current_mode = path.stat().st_mode & 0o777 if path.exists() else None
+                if current != before or current_mode != action['before_mode']:
                     raise ValueError('A file changed after planning: ' + str(path))
                 record = records.get(action['relative'])
+                if record is not None:
+                    record = dict(record)
+                    if not matches_record(path, record):
+                        record['preserve_on_uninstall'] = True
                 if record is None:
                     backup = None
                     if before is not None:
-                        backup = self.prefix / 'backups' / installation_id / action['relative']
+                        backup = self.target('.agents/ready-to-use-agent/backups/' + installation_id + '/' + action['relative'])
                         private_write(backup, before)
                     record = {'before_existed': before is not None, 'backup': str(backup) if backup else None,
                               'before_sha256': digest(before) if before is not None else None,
@@ -181,6 +207,9 @@ class Installation:
                     private_write(path, data, action['mode'])
                     changed.append(action)
                 record['sha256'] = digest(data)
+                record['installed_mode'] = path.stat().st_mode & 0o777
+                if 'managed_hooks' in action:
+                    record['managed_hooks'] = action['managed_hooks']
                 if action['relative'] in PROFILES.values():
                     text = data.decode()
                     block = START + text.split(START, 1)[1].split(END, 1)[0] + END
@@ -188,27 +217,38 @@ class Installation:
                 records[action['relative']] = record
             manifest = {'version': 1, 'installed_at': datetime.now(timezone.utc).isoformat(),
                         'agents': self.agents, 'files': records}
-            private_write(self.manifest_path, json_bytes(manifest))
+            private_write(self.target('.agents/ready-to-use-agent/install-manifest.json'), json_bytes(manifest))
         except Exception:
             for action in reversed(changed):
-                path = action['target']
+                try:
+                    path = self.target(action['relative'])
+                except ValueError:
+                    continue
                 if path.exists() and digest(path.read_bytes()) == digest(action['data']):
                     if action['before'] is None:
                         path.unlink()
                     else:
-                        private_write(path, action['before'])
+                        private_write(path, action['before'], action['before_mode'])
             raise
         return {'installed_files': len(self.actions), 'changed_files': len(changed), 'manifest': str(self.manifest_path)}
 
     def uninstall(self, dry_run=False):
         if not self.manifest_path.exists():
             return {'removed': [], 'preserved_edited_files': [], 'state': 'not_installed'}
+        if any(name.startswith('.agents/ready-to-use-agent/workflow/') for name in self.previous.get('files', {})):
+            self.workflow_support().guard_uninstall(self)
         removed, preserved, pending, keep = [], [], [], {}
+        hook_updates = []
         for relative, record in self.previous.get('files', {}).items():
             path = self.target(relative)
             if not path.exists():
                 continue
-            if digest(path.read_bytes()) != record['sha256']:
+            if record.get('preserve_on_uninstall') or not matches_record(path, record):
+                before = path.read_bytes()
+                updated = self.workflow_support().remove_hooks(before, record['managed_hooks']) if record.get('managed_hooks') else None
+                if updated is not None:
+                    hook_updates.append((path, before, updated))
+                    record = {**record, 'managed_hooks': []}
                 preserved.append(str(path))
                 keep[relative] = record
                 continue
@@ -224,7 +264,8 @@ class Installation:
                     raise ValueError('The original configuration backup changed')
             pending.append((relative, path, record, before))
         for relative, path, record, before in pending:
-            if digest(path.read_bytes()) != record['sha256']:
+            path = self.target(relative)
+            if not matches_record(path, record):
                 preserved.append(str(path))
                 keep[relative] = record
                 continue
@@ -235,6 +276,10 @@ class Installation:
                     path.unlink()
             removed.append(str(path))
         if not dry_run:
+            for path, before, updated in hook_updates:
+                if path.read_bytes() != before:
+                    raise ValueError('A hook configuration changed during uninstall')
+                private_write(path, updated)
             if keep:
                 manifest = {**self.previous, 'files': keep}
                 private_write(self.manifest_path, json_bytes(manifest))
@@ -267,6 +312,10 @@ def main():
     parser.add_argument('--provider')
     parser.add_argument('--model')
     parser.add_argument('--native-threshold', type=int, default=200000)
+    parser.add_argument('--workflow', action='store_true', help='Install the controller without activating background services')
+    parser.add_argument('--workflow-platform', choices=('darwin', 'linux', 'win32'))
+    parser.add_argument('--workflow-pi', help='Destination Pi executable; defaults to the locked local runtime or PATH')
+    parser.add_argument('--claude-hooks', action='store_true', help='Add optional Claude Stop and SessionEnd hooks')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--uninstall', action='store_true')
     parser.add_argument('--doctor', action='store_true')
@@ -275,7 +324,9 @@ def main():
         if args.doctor:
             result = doctor(args.home)
         else:
-            installation = Installation(args.home, args.agents, provider=args.provider, model=args.model, threshold=args.native_threshold)
+            installation = Installation(args.home, args.agents, provider=args.provider, model=args.model, threshold=args.native_threshold,
+                                        workflow=args.workflow, workflow_platform=args.workflow_platform,
+                                        workflow_pi=args.workflow_pi, claude_hooks=args.claude_hooks)
             result = installation.uninstall(args.dry_run) if args.uninstall else installation.plan() if args.dry_run else installation.apply()
         print(json.dumps(result, indent=2))
     except (OSError, ValueError) as error:

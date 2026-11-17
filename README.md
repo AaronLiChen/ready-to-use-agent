@@ -11,10 +11,13 @@ The configuration contains no credentials, private conversations, or machine-spe
 - Pi native compaction for supported GPT Responses models.
 - Bounded recovery for oversized histories and interrupted tool calls.
 - Non-destructive installation, dry-run output, backups, and guarded uninstall.
+- Optional persistent PR ownership, reviewer intake, rereview, reapproval, action history, and inert platform services.
 
-Workflow automation is a separate module.
-Its setup includes persistent PR ownership, rereview, reapproval, intake, and brief action notices.
+The `--workflow` option installs the separate automation module without activation.
+GitHub intake supports individual requests and explicit repository-wide watches.
+ADO and optional read-only Teams intake require the operator's own identity and configuration.
 Installation alone does not grant PR-write, messaging, cloud, or production authority.
+See [workflow setup](docs/workflow-controller.md) for activation and safety requirements.
 
 ## Quick start
 
@@ -140,6 +143,8 @@ python3 install.py --uninstall
 ```
 
 The uninstall command preserves operator edits and restores original backed-up files when safe.
+Reinstallation does not erase the record of earlier operator edits or permission changes.
+Preserved files may need manual cleanup of package-specific references.
 
 ## Validation
 
