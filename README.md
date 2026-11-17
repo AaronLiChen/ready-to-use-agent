@@ -140,6 +140,8 @@ python3 install.py --uninstall
 ```
 
 The uninstall command preserves operator edits and restores original backed-up files when safe.
+Reinstallation does not erase the record of earlier operator edits or permission changes.
+Preserved files may need manual cleanup of package-specific references.
 
 ## Validation
 

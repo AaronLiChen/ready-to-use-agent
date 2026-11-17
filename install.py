@@ -38,6 +38,13 @@ def private_write(path, data, mode=0o600):
         temporary.unlink(missing_ok=True)
 
 
+def matches_record(path, record):
+    if not path.is_file() or digest(path.read_bytes()) != record.get('sha256'):
+        return False
+    mode = record.get('installed_mode')
+    return mode is None or path.stat().st_mode & 0o777 == mode
+
+
 def managed_block(current, body):
     block = START + '\n' + body.rstrip() + '\n' + END
     if current.count(START) != current.count(END) or current.count(START) > 1:
@@ -91,7 +98,8 @@ class Installation:
         if before is not None and before != data and not merge:
             if not previous or digest(before) != previous.get('sha256'):
                 raise ValueError('Refusing to replace an unmanaged or edited file: ' + str(target))
-        self.actions.append({'relative': relative, 'target': target, 'before': before, 'data': data, 'mode': mode})
+        self.actions.append({'relative': relative, 'target': target, 'before': before, 'data': data, 'mode': mode,
+                             'before_mode': target.stat().st_mode & 0o777 if target.exists() else None})
 
     def plan(self):
         self.actions = []
@@ -164,15 +172,20 @@ class Installation:
         changed = []
         try:
             for action in self.actions:
-                path, before, data = action['target'], action['before'], action['data']
+                path, before, data = self.target(action['relative']), action['before'], action['data']
                 current = path.read_bytes() if path.exists() else None
-                if current != before:
+                current_mode = path.stat().st_mode & 0o777 if path.exists() else None
+                if current != before or current_mode != action['before_mode']:
                     raise ValueError('A file changed after planning: ' + str(path))
                 record = records.get(action['relative'])
+                if record is not None:
+                    record = dict(record)
+                    if not matches_record(path, record):
+                        record['preserve_on_uninstall'] = True
                 if record is None:
                     backup = None
                     if before is not None:
-                        backup = self.prefix / 'backups' / installation_id / action['relative']
+                        backup = self.target('.agents/ready-to-use-agent/backups/' + installation_id + '/' + action['relative'])
                         private_write(backup, before)
                     record = {'before_existed': before is not None, 'backup': str(backup) if backup else None,
                               'before_sha256': digest(before) if before is not None else None,
@@ -181,6 +194,7 @@ class Installation:
                     private_write(path, data, action['mode'])
                     changed.append(action)
                 record['sha256'] = digest(data)
+                record['installed_mode'] = path.stat().st_mode & 0o777
                 if action['relative'] in PROFILES.values():
                     text = data.decode()
                     block = START + text.split(START, 1)[1].split(END, 1)[0] + END
@@ -188,15 +202,18 @@ class Installation:
                 records[action['relative']] = record
             manifest = {'version': 1, 'installed_at': datetime.now(timezone.utc).isoformat(),
                         'agents': self.agents, 'files': records}
-            private_write(self.manifest_path, json_bytes(manifest))
+            private_write(self.target('.agents/ready-to-use-agent/install-manifest.json'), json_bytes(manifest))
         except Exception:
             for action in reversed(changed):
-                path = action['target']
+                try:
+                    path = self.target(action['relative'])
+                except ValueError:
+                    continue
                 if path.exists() and digest(path.read_bytes()) == digest(action['data']):
                     if action['before'] is None:
                         path.unlink()
                     else:
-                        private_write(path, action['before'])
+                        private_write(path, action['before'], action['before_mode'])
             raise
         return {'installed_files': len(self.actions), 'changed_files': len(changed), 'manifest': str(self.manifest_path)}
 
@@ -208,7 +225,7 @@ class Installation:
             path = self.target(relative)
             if not path.exists():
                 continue
-            if digest(path.read_bytes()) != record['sha256']:
+            if record.get('preserve_on_uninstall') or not matches_record(path, record):
                 preserved.append(str(path))
                 keep[relative] = record
                 continue
@@ -224,7 +241,8 @@ class Installation:
                     raise ValueError('The original configuration backup changed')
             pending.append((relative, path, record, before))
         for relative, path, record, before in pending:
-            if digest(path.read_bytes()) != record['sha256']:
+            path = self.target(relative)
+            if not matches_record(path, record):
                 preserved.append(str(path))
                 keep[relative] = record
                 continue
