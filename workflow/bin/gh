@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Pin managed GitHub commands to one stored account without global switching."""
+import os
+from pathlib import Path
+import subprocess
+import sys
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
+import github_auth as auth
+
+args=sys.argv[1:];login=os.environ.get('AUTOWORKFLOW_GITHUB_LOGIN')
+real=auth.native('gh')
+managed=any(os.environ.get(key) for key in ('AUTOWORKFLOW_JOB', 'AUTOWORKFLOW_INTAKE'))
+if managed:
+    try:
+        if not login:
+            raise ValueError('Managed GitHub commands require an explicitly pinned account')
+        import write_guard
+        canonical=write_guard.github_command(args)
+        if canonical is not None:
+            args=canonical
+    except (OSError, ValueError, RuntimeError) as error:
+        print('Managed GitHub action held: ' + str(error), file=sys.stderr)
+        raise SystemExit(75)
+if not login:os.execv(real,[real,*args])
+if args[:1]==['auth'] and any(value in args[1:3] for value in ['switch','login','logout','setup-git','token']):
+    print('Managed PR commands must keep their pinned GitHub identity. Use the existing account; do not switch or print credentials.',file=sys.stderr)
+    raise SystemExit(75)
+try:env=auth.token_env(login)
+except auth.GitHubAuthError:
+    print('AUTOWORKFLOW_GITHUB_AUTH_WAIT: stored account '+login+' needs interactive sign-in.',file=sys.stderr);raise SystemExit(75)
+if managed:
+    try:
+        auth.verified(login, auth.run_json(['api', 'user'], login))
+    except (ValueError, RuntimeError) as error:
+        print('Managed GitHub action held: ' + str(error), file=sys.stderr)
+        raise SystemExit(75)
+result=subprocess.run([real,*args],env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+if result.returncode and any(value in result.stderr.lower() for value in [b'http 401',b'bad credentials',b'authentication required']):
+    auth.failure(login)
+    print('AUTOWORKFLOW_GITHUB_AUTH_WAIT: sign in as '+login+'; the watcher will verify recovery.',file=sys.stderr)
+    raise SystemExit(75)
+sys.stdout.buffer.write(result.stdout)
+if result.returncode:
+    print('GitHub command failed. Inspect provider state without printing credentials.', file=sys.stderr)
+raise SystemExit(result.returncode)

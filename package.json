@@ -9,7 +9,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test extensions/openai-native-compaction/test-core.mjs extensions/openai-native-compaction/test-recovery.mjs extensions/openai-native-compaction/test-sdk.mjs",
+    "test": "node --test extensions/openai-native-compaction/test-core.mjs extensions/openai-native-compaction/test-recovery.mjs extensions/openai-native-compaction/test-sdk.mjs extensions/workflow-ownership/test-extension.mjs",
     "typecheck": "tsc --noEmit",
     "test:python": "python3 -m unittest discover -s tests -v",
     "check:export": "python3 scripts/check_export.py"

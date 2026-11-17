@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Scope provider headers and owned branch pushes to one managed task."""
+import base64
+import os
+from pathlib import Path
+import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import github_auth as auth
+import configuration
+
+args = sys.argv[1:]
+real = auth.native('git')
+network = next((value for value in args if value in ('clone', 'fetch', 'pull', 'push', 'ls-remote', 'submodule')), None)
+managed = any(os.environ.get(key) for key in ('AUTOWORKFLOW_JOB', 'AUTOWORKFLOW_INTAKE'))
+if not network:
+    os.execv(real, [real, *args])
+if managed and network in ('push', 'pull', 'submodule'):
+    try:
+        import write_guard
+        if network != 'push':
+            raise ValueError('Use an explicit scoped fetch. Bulk submodules and implicit merges are not authorized.')
+        write_guard.git_push(args)
+    except (ValueError, RuntimeError) as error:
+        print('Managed Git operation held: ' + str(error), file=sys.stderr)
+        raise SystemExit(75)
+login = os.environ.get('AUTOWORKFLOW_GITHUB_LOGIN')
+env = configuration.clean_worker_env(os.environ)
+header, prefix = None, None
+try:
+    if login:
+        token_env = auth.token_env(login, env)
+        auth.verified(login, auth.run_json(['api', 'user'], login))
+        token = token_env.pop('GH_TOKEN')
+        header = 'Authorization: Basic ' + base64.b64encode(('x-access-token:' + token).encode()).decode()
+        prefix = 'https://github.com/'
+        env = token_env
+    elif managed:
+        import workflow as w, ado, auth_recovery
+        context = auth_recovery.target()
+        if context and context.get('url', '').startswith('https://dev.azure.com/'):
+            org, _, _, _ = ado.parse_pr_input(context['url'])
+            token = auth_recovery.acquire(ado)
+            auth_recovery.verify_token(token)
+            header, prefix = 'Authorization: Bearer ' + token, ado.origin(org)
+except (auth.GitHubAuthError, RuntimeError, ValueError):
+    print('AUTOWORKFLOW_AUTH_WAIT: provider identity or authentication needs operator help.', file=sys.stderr)
+    raise SystemExit(75)
+if header:
+    env['GIT_CONFIG_COUNT'] = '2'
+    env['GIT_CONFIG_KEY_0'] = 'http.' + prefix + '.extraheader'
+    env['GIT_CONFIG_VALUE_0'] = header
+    env['GIT_CONFIG_KEY_1'] = 'http.followRedirects'
+    env['GIT_CONFIG_VALUE_1'] = 'false'
+env['GIT_TERMINAL_PROMPT'] = '0'
+os.execve(real, [real, *args], env)

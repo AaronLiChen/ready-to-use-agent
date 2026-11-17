@@ -32,9 +32,9 @@ jobs:
         run: python3 scripts/check_export.py
       - name: Validate TypeScript
         run: npm run typecheck
-      - name: Test native compaction
+      - name: Test native compaction and ownership extension
         run: npm test
-      - name: Test portable installation
+      - name: Test controller, portable installation, and platform services
         run: python3 -m unittest discover -s tests -v
       - name: Audit dependencies
         run: npm audit --registry=https://registry.npmjs.org --audit-level=moderate
