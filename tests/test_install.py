@@ -150,6 +150,70 @@ class InstallTests(unittest.TestCase):
         manifest = json.loads((self.home / '.agents/ready-to-use-agent/install-manifest.json').read_text())
         self.assertEqual(len(manifest['files']), 1)
 
+    def test_instruction_edits_survive_reinstall_and_uninstall(self):
+        path = self.home / '.pi/agent/AGENTS.md'
+        path.parent.mkdir(parents=True)
+        path.write_text('Original operator rule.\n')
+        self.install()
+        path.write_text('Additional operator rule.\n\n' + path.read_text())
+        self.install()
+        before = path.read_bytes()
+        result = installer.Installation(self.home, source=ROOT).uninstall()
+        self.assertIn(str(path), result['preserved_edited_files'])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIn('Additional operator rule.', path.read_text())
+
+    def test_setting_edits_survive_reinstall_and_uninstall(self):
+        self.install()
+        path = self.home / '.pi/agent/settings.json'
+        data = json.loads(path.read_text())
+        data['defaultModel'] = 'operator-selected-model'
+        path.write_text(json.dumps(data))
+        self.install()
+        result = installer.Installation(self.home, source=ROOT).uninstall()
+        self.assertIn(str(path), result['preserved_edited_files'])
+        self.assertEqual(json.loads(path.read_text())['defaultModel'], 'operator-selected-model')
+
+    def test_operator_permission_changes_survive_reinstallation(self):
+        self.install()
+        path = self.home / '.pi/agent/AGENTS.md'
+        path.chmod(0o640)
+        if path.stat().st_mode & 0o777 != 0o640:
+            self.skipTest('This platform does not retain Unix file modes')
+        self.install()
+        result = installer.Installation(self.home, source=ROOT).uninstall()
+        self.assertIn(str(path), result['preserved_edited_files'])
+        self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+
+    def test_parent_symlink_race_after_planning_is_rejected(self):
+        installation = installer.Installation(self.home, source=ROOT)
+        installation.plan()
+        with tempfile.TemporaryDirectory() as outside:
+            try:
+                (self.home / '.pi').symlink_to(outside, target_is_directory=True)
+            except OSError:
+                self.skipTest('This platform cannot create test symlinks')
+            with self.assertRaisesRegex(ValueError, 'symlink'):
+                installation.apply()
+            self.assertEqual(list(Path(outside).iterdir()), [])
+
+    def test_failed_install_restores_original_file_permissions(self):
+        path = self.home / '.pi/agent/AGENTS.md'
+        path.parent.mkdir(parents=True)
+        path.write_text('Original operator rule.\n')
+        path.chmod(0o640)
+        original_mode = path.stat().st_mode & 0o777
+        write = installer.private_write
+        def fail_on_native_source(target, data, mode=0o600):
+            if target.name == 'core.ts':
+                raise OSError('Synthetic installation failure')
+            return write(target, data, mode)
+        with patch.object(installer, 'private_write', side_effect=fail_on_native_source):
+            with self.assertRaisesRegex(OSError, 'Synthetic'):
+                self.install()
+        self.assertEqual(path.read_text(), 'Original operator rule.\n')
+        self.assertEqual(path.stat().st_mode & 0o777, original_mode)
+
     def test_clean_uninstall_removes_only_managed_files(self):
         self.install()
         unrelated = self.home / '.pi/agent/unrelated.txt'
